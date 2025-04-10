@@ -2,140 +2,135 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\ProductRequest;
+use App\Services\Auth\AuthServiceInterface;
+use App\Services\Product\ProductServiceInterface;
+use Illuminate\Http\RedirectResponse;
+use Illuminate\View\View;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Auth;
-use App\Models\Product;
-use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Validator;
-use App\Jobs\SendPriceChangeNotification;
 
 class AdminController extends Controller
 {
-    public function loginPage()
+    public function __construct(
+        private readonly AuthServiceInterface $authService,
+        private readonly ProductServiceInterface $productService
+    ) {}
+
+    /**
+     * Display the login page
+     *
+     * @return View
+     */
+    public function loginPage(): View
     {
         return view('login');
     }
 
-    public function login(Request $request)
+    /**
+     * Handle the login request
+     *
+     * @param Request $request
+     * @return RedirectResponse
+     */
+    public function login(Request $request): RedirectResponse
     {
-        if (Auth::attempt($request->except('_token'))) {
-            return redirect()->route('admin.products');
+        if ($this->authService->attempt($request->except('_token'))) {
+            return redirect()->route('admin.product');
         }
 
         return redirect()->back()->with('error', 'Invalid login credentials');
     }
 
-    public function logout()
+    /**
+     * Handle the logout request
+     *
+     * @return RedirectResponse
+     */
+    public function logout(): RedirectResponse
     {
-        Auth::logout();
+        $this->authService->logout();
         return redirect()->route('login');
     }
 
-    public function products()
+    /**
+     * Display a list of all products
+     *
+     * @return View
+     */
+    public function products(): View
     {
-        $products = Product::all();
+        $products = $this->productService->getAllProducts();
         return view('admin.products', compact('products'));
     }
 
-    public function editProduct($id)
-    {
-        $product = Product::find($id);
-        return view('admin.edit_product', compact('product'));
-    }
-
-    public function updateProduct(Request $request, $id)
-    {
-        // Validate the name field
-        $validator = Validator::make($request->all(), [
-            'name' => 'required|min:3',
-        ]);
-
-        if ($validator->fails()) {
-            return redirect()
-                ->back()
-                ->withErrors($validator)
-                ->withInput();
-        }
-
-        $product = Product::find($id);
-
-        // Store the old price before updating
-        $oldPrice = $product->price;
-
-        $product->update($request->all());
-
-        if ($request->hasFile('image')) {
-            $file = $request->file('image');
-            $filename = $file->getClientOriginalExtension();
-            $file->move(public_path('uploads'), $filename);
-            $product->image = 'uploads/' . $filename;
-        }
-
-        $product->save();
-
-        // Check if price has changed
-        if ($oldPrice != $product->price) {
-            // Get notification email from env
-            $notificationEmail = env('PRICE_NOTIFICATION_EMAIL', 'admin@example.com');
-
-            try {
-                SendPriceChangeNotification::dispatch(
-                    $product,
-                    $oldPrice,
-                    $product->price,
-                    $notificationEmail
-                );
-            } catch (\Exception $e) {
-                 Log::error('Failed to dispatch price change notification: ' . $e->getMessage());
-            }
-        }
-
-        return redirect()->route('admin.products')->with('success', 'Product updated successfully');
-    }
-
-    public function deleteProduct($id)
-    {
-        $product = Product::find($id);
-        $product->delete();
-
-        return redirect()->route('admin.products')->with('success', 'Product deleted successfully');
-    }
-
-    public function addProductForm()
+    /**
+     * Show the form for creating a new product
+     *
+     * @return View
+     */
+    public function createProduct(): View
     {
         return view('admin.add_product');
     }
 
-    public function addProduct(Request $request)
+    /**
+     * Store a newly created product
+     *
+     * @param ProductRequest $request
+     * @return RedirectResponse
+     */
+    public function storeProduct(ProductRequest $request): RedirectResponse
     {
-        $validator = Validator::make($request->all(), [
-            'name' => 'required|min:3',
-        ]);
+        $this->productService->createProduct($request);
+        return redirect()->route('admin.product')->with('success', 'Product added successfully');
+    }
 
-        if ($validator->fails()) {
-            return redirect()
-                ->back()
-                ->withErrors($validator)
-                ->withInput();
+    /**
+     * Show the form for editing a product
+     *
+     * @param int $id
+     * @return View|RedirectResponse
+     */
+    public function editProduct(int $id): View|RedirectResponse
+    {
+        $product = $this->productService->findProduct($id);
+
+        if (!$product) {
+            return redirect()->route('admin.product')->with('error', 'Product not found');
         }
 
-        $product = Product::create([
-            'name' => $request->name,
-            'description' => $request->description,
-            'price' => $request->price
-        ]);
+        return view('admin.edit_product', compact('product'));
+    }
 
-        if ($request->hasFile('image')) {
-            $file = $request->file('image');
-            $filename = $file->getClientOriginalExtension();
-            $file->move(public_path('uploads'), $filename);
-            $product->image = 'uploads/' . $filename;
-        } else {
-            $product->image = 'product-placeholder.jpg';
+    /**
+     * Update the specified product
+     *
+     * @param ProductRequest $request
+     * @param int $id
+     * @return RedirectResponse
+     */
+    public function updateProduct(ProductRequest $request, int $id): RedirectResponse
+    {
+        try {
+            $this->productService->updateProduct($request, $id);
+            return redirect()->route('admin.product')->with('success', 'Product updated successfully');
+        } catch (\Exception $e) {
+            return redirect()->route('admin.product')->with('error', $e->getMessage());
+        }
+    }
+
+    /**
+     * Delete the specified product
+     *
+     * @param int $id
+     * @return RedirectResponse
+     */
+    public function deleteProduct(int $id): RedirectResponse
+    {
+        if ($this->productService->deleteProduct($id)) {
+            return redirect()->route('admin.product')->with('success', 'Product deleted successfully');
         }
 
-        $product->save();
-
-        return redirect()->route('admin.products')->with('success', 'Product added successfully');
+        return redirect()->route('admin.product')->with('error', 'Product not found');
     }
 }

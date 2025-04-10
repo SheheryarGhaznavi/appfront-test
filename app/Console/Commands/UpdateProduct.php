@@ -2,11 +2,11 @@
 
 namespace App\Console\Commands;
 
-use Illuminate\Console\Command;
+use App\DTOs\ProductDTO;
 use App\Models\Product;
-use Illuminate\Support\Facades\Validator;
-use App\Jobs\SendPriceChangeNotification;
-use Illuminate\Support\Facades\Log;
+use App\Repositories\ProductRepositoryInterface;
+use App\Services\Product\ProductServiceInterface;
+use Illuminate\Console\Command;
 
 class UpdateProduct extends Command
 {
@@ -29,8 +29,10 @@ class UpdateProduct extends Command
      *
      * @return void
      */
-    public function __construct()
-    {
+    public function __construct(
+        private readonly ProductRepositoryInterface $productRepository,
+        private readonly ProductServiceInterface $productService
+    ) {
         parent::__construct();
     }
 
@@ -42,7 +44,12 @@ class UpdateProduct extends Command
     public function handle()
     {
         $id = $this->argument('id');
-        $product = Product::find($id);
+        $product = $this->productRepository->find($id);
+
+        if (!$product) {
+            $this->error("Product with ID {$id} not found.");
+            return 1;
+        }
 
         $data = [];
         if ($this->option('name')) {
@@ -55,37 +62,42 @@ class UpdateProduct extends Command
                 $this->error("Name must be at least 3 characters long.");
                 return 1;
             }
-        }
-        if ($this->option('description')) {
-            $data['description'] = $this->option('description');
-        }
-        if ($this->option('price')) {
-            $data['price'] = $this->option('price');
+        } else {
+            $data['name'] = $product->name;
         }
 
+        $data['description'] = $this->option('description') ?: $product->description;
+        $data['price'] = $this->option('price') ?: $product->price;
+
+        // Create a DTO with the updated data
+        $productDTO = new ProductDTO(
+            name: $data['name'],
+            description: $data['description'],
+            price: (float) $data['price'],
+            image: $product->image
+        );
 
         $oldPrice = $product->price;
+        $newPrice = (float) $data['price'];
 
-        if (!empty($data)) {
-            $product->update($data);
-            $product->save();
+        if ($oldPrice != $newPrice || $product->name != $data['name'] || $product->description != $data['description']) {
+            // Update the product using the repository
+            $this->productRepository->update($product, (array) $productDTO);
 
             $this->info("Product updated successfully.");
 
             // Check if price has changed
-            if (isset($data['price']) && $oldPrice != $product->price) {
-                $this->info("Price changed from {$oldPrice} to {$product->price}.");
+            if ($oldPrice != $newPrice) {
+                $this->info("Price changed from {$oldPrice} to {$newPrice}.");
 
-                $notificationEmail = env('PRICE_NOTIFICATION_EMAIL', 'admin@example.com');
-
+                // Use the product service to handle price change notifications
                 try {
-                    SendPriceChangeNotification::dispatch(
-                        $product,
-                        $oldPrice,
-                        $product->price,
-                        $notificationEmail
-                    );
-                    $this->info("Price change notification dispatched to {$notificationEmail}.");
+                    // We're using reflection to access the private method for demonstration purposes
+                    $reflectionMethod = new \ReflectionMethod($this->productService, 'dispatchPriceChangeNotification');
+                    $reflectionMethod->setAccessible(true);
+                    $reflectionMethod->invoke($this->productService, $product, $oldPrice, $newPrice);
+
+                    $this->info("Price change notification dispatched to " . config('products.notification_email'));
                 } catch (\Exception $e) {
                     $this->error("Failed to dispatch price change notification: " . $e->getMessage());
                 }
